@@ -1,101 +1,60 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    col, avg, max, min, count, when, current_timestamp,
-    unix_timestamp, window, countDistinct, from_unixtime
-)
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType,
-    BooleanType, TimestampType, IntegerType, LongType
-)
+from pyspark.sql.functions import col, count, avg, min, max
+import os
 
-def create_spark_session():
-    spark = SparkSession.builder \
-        .appName("SensorAnalytics") \
-        .config("spark.sql.adaptive.enabled", "true") \
-        .config("spark.sql.parquet.enableVectorizedReader", "true") \
-        .getOrCreate()
-    return spark
+# ======================
+# Spark 初始化
+# ======================
+spark = SparkSession.builder \
+    .appName("SensorAnalytics") \
+    .master("local[*]") \
+    .getOrCreate()
 
-def load_curated_data(spark, path="file:///tmp/datalake/curated"):
-    print("Loading curated layer data...")
-    
-    schema = StructType([
-        StructField("sensor_type", StringType(), True),
-        StructField("value", DoubleType(), True),
-        StructField("unit", StringType(), True),
-        StructField("timestamp", LongType(), True),
-        StructField("source", StringType(), True),
-        StructField("is_anomaly", BooleanType(), True),
-        StructField("value_category", StringType(), True),
-        StructField("processing_time", TimestampType(), True),
-        StructField("event_time", TimestampType(), True),
-        StructField("anomaly_flag", IntegerType(), True)
-    ])
-    
-    df = spark.read \
-        .schema(schema) \
-        .parquet(path)
-    
-    df = df.withColumn("timestamp", col("timestamp").cast(DoubleType()))
-    df = df.withColumn("event_time", from_unixtime(col("timestamp") / 1000).cast(TimestampType()))
-    
-    df.printSchema()
-    print(f"Loaded row count: {df.count()}")
-    
-    return df
+# ======================
+# 关键修复：忽略流元数据，直接读 parquet 文件
+# ======================
+# 路径不变
+CURATED_PATH = "C:/tmp/datalake/curated/domain=iot"
+OUTPUT_DIR = "outputs/analytics"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def basic_analytics(df):
-    print("Executing basic sensor analytics...")
-    
-    stats_df = df.groupBy("sensor_type", "source") \
-        .agg(
-            count("*").alias("total_records"),
-            avg("value").alias("avg_value"),
-            max("value").alias("max_value"),
-            min("value").alias("min_value"),
-            count(when(col("is_anomaly") == True, 1)).alias("anomaly_count"),
-            (count(when(col("is_anomaly") == True, 1)) / count("*")).alias("anomaly_rate"),
-            current_timestamp().alias("analysis_time")
-        )
-    
-    stats_df.show(truncate=False)
-    return stats_df
+try:
+    # 直接读取文件，不读流元数据 → 修复报错
+    df = spark.read.option("mergeSchema", "true").parquet(CURATED_PATH + "/*")
+except:
+    df = spark.read.option("mergeSchema", "true").parquet(CURATED_PATH)
 
-def windowed_anomaly_analytics(df):
-    print("Executing windowed anomaly analytics...")
-    
-    df = df.withColumn("event_time", col("event_time").cast(TimestampType()))
-    
-    windowed_stats_df = df.groupBy(
-        "sensor_type", 
-        "source",
-        window(col("event_time"), "10 minutes", "5 minutes")
-    ).agg(
-        count("*").alias("window_records"),
-        count(when(col("is_anomaly") == True, 1)).alias("window_anomaly_count"),
-        avg("value").alias("window_avg_value"),
-        max("value").alias("window_max_value"),
-        min("value").alias("window_min_value")
-    ).orderBy("sensor_type", "window")
-    
-    windowed_stats_df.show(10, truncate=False)
-    return windowed_stats_df
+print(" 读取数据成功")
+df.printSchema()
 
-def main():
-    try:
-        spark = create_spark_session()
-        
-        curated_df = load_curated_data(spark)
-        
-        basic_analytics(curated_df)
-        
-        windowed_anomaly_analytics(curated_df)
-        
-    except Exception as e:
-        print(f"Analytics task failed: {e}")
-        raise
-    finally:
-        spark.stop()
+# ======================
+# 1. 总数量
+# ======================
+total = df.count()
+print(f"\n===== 总记录数：{total} =====")
 
-if __name__ == "__main__":
-    main()
+# ======================
+# 2. 传感器统计
+# ======================
+print("\n===== 传感器统计 =====")
+sensor_stats = df.groupBy("sensor") \
+    .agg(
+        count("*").alias("total"),
+        avg("value").alias("avg"),
+        min("value").alias("min"),
+        max("value").alias("max"),
+        sum(col("is_anomaly").cast("int")).alias("anomalies")
+    )
+sensor_stats.show(truncate=False)
+sensor_stats.write.csv(OUTPUT_DIR + "/sensor_stats", header=True, mode="overwrite")
+
+# ======================
+# 3. 异常数据
+# ======================
+print("\n===== 异常数据 =====")
+anomalies = df.filter(col("is_anomaly") == True)
+anomalies.show(truncate=False)
+anomalies.write.csv(OUTPUT_DIR + "/anomalies", header=True, mode="overwrite")
+
+print("\n 分析完成！结果在 outputs/analytics")
+spark.stop()

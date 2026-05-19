@@ -1,0 +1,4 @@
+sensor,avg_value,min_value,max_value,anomaly_rate
+pressure,1010.1056944444445,970.0,1050.0,38.89
+temperature,29.976923076923082,10.0,46.0,40.0
+humidity,58.989218749999985,20.0,96.0,9.38

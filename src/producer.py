@@ -1,80 +1,66 @@
 import argparse
 import json
-import random
 import time
+import random
 from kafka import KafkaProducer
-from kafka.errors import KafkaError
 
-BOOTSTRAP_SERVERS = "localhost:9092,localhost:9094,localhost:9096"
-TOPIC = "sensor-events"
-
-SENSOR_CONFIGS = {
-    "temperature": {"min": 15.0, "max": 45.0, "unit": "°C"},
-    "humidity": {"min": 30.0, "max": 95.0, "unit": "%"},
-    "pressure": {"min": 980.0, "max": 1040.0, "unit": "hPa"}
+RANGES = {
+    "temperature": (15.0, 45.0),
+    "humidity": (30.0, 95.0),
+    "pressure": (980.0, 1040.0)
 }
-
-def generate_sensor_value(sensor_type):
-    cfg = SENSOR_CONFIGS[sensor_type]
-    if random.random() < 0.1:
-        return round(random.choice([cfg["min"] - 10, cfg["max"] + 10]), 2)
-    return round(random.uniform(cfg["min"], cfg["max"]), 2)
-
-def create_kafka_producer():
-    try:
-        producer = KafkaProducer(
-            bootstrap_servers=BOOTSTRAP_SERVERS,
-            acks="all",
-            retries=3,
-            linger_ms=5,
-            key_serializer=lambda k: k.encode("utf-8"),
-            value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-            api_version=(2, 8, 0),
-            request_timeout_ms=30000,
-            connections_max_idle_ms=540000
-        )
-        return producer
-    except KafkaError as e:
-        print(f"Failed to connect to Kafka: {str(e)}")
-        raise SystemExit(1)
+ANOMALY_THRESHOLD = 0.1
 
 def main():
-    parser = argparse.ArgumentParser(description="Kafka Sensor Data Producer")
-    parser.add_argument("--count", type=int, default=100, help="Total number of events to send")
-    parser.add_argument("--rate", type=int, default=10, help="Events per second")
-    parser.add_argument("--source", type=str, default="site-A-rack-12", help="Sensor source identifier")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--count", type=int, default=100)
+    parser.add_argument("--rate", type=float, default=5.0)
+    parser.add_argument("--source", type=str, default="site-A-rack-12")
     args = parser.parse_args()
 
-    producer = create_kafka_producer()
-    sensor_types = list(SENSOR_CONFIGS.keys())
-    print(f"Starting to send {args.count} messages to topic [{TOPIC}] at rate: {args.rate} messages/second")
+    producer = KafkaProducer(
+        bootstrap_servers=["localhost:9092", "localhost:9094", "localhost:9096"],
+        acks="all",
+        retries=5,
+        max_in_flight_requests_per_connection=1,
+        linger_ms=10,
+        batch_size=32768,
+        key_serializer=lambda k: k.encode("utf-8"),
+        value_serializer=lambda v: json.dumps(v).encode("utf-8")
+    )
 
-    for i in range(args.count):
-        sensor_type = random.choice(sensor_types)
-        value = generate_sensor_value(sensor_type)
-        is_anomaly = not (SENSOR_CONFIGS[sensor_type]["min"] <= value <= SENSOR_CONFIGS[sensor_type]["max"])
-        
-        message = {
-            "sensor_type": sensor_type,
-            "value": value,
-            "unit": SENSOR_CONFIGS[sensor_type]["unit"],
+    sensors = ["temperature", "humidity", "pressure"]
+    interval = 1.0 / args.rate
+
+    for _ in range(args.count):
+        sensor = random.choice(sensors)
+        min_val, max_val = RANGES[sensor]
+        is_anomaly = random.random() < ANOMALY_THRESHOLD
+
+        if is_anomaly:
+            if sensor == "temperature":
+                val = random.choice([10.0, 46.0])
+            elif sensor == "humidity":
+                val = random.choice([20.0, 96.0])
+            else:
+                val = random.choice([970.0, 1050.0])
+        else:
+            val = round(random.uniform(min_val, max_val), 2)
+
+        msg = {
+            "sensor": sensor,
+            "value": val,
+            "unit": {"temperature":"C","humidity":"%","pressure":"hPa"}[sensor],
             "timestamp": int(time.time() * 1000),
             "source": args.source,
-            "is_anomaly": is_anomaly
+            "anomaly": is_anomaly
         }
-
-        try:
-            future = producer.send(TOPIC, key=sensor_type, value=message)
-            record_metadata = future.get(timeout=10)
-            print(f"[{i+1}/{args.count}] Sent successfully | Partition:{record_metadata.partition} | Offset:{record_metadata.offset} | Message:{message}")
-        except KafkaError as e:
-            print(f"[{i+1}/{args.count}] Failed to send: {str(e)} | Message:{message}")
-
-        time.sleep(1 / args.rate)
+        producer.send("sensor-events", key=sensor, value=msg)
+        time.sleep(interval)
 
     producer.flush()
     producer.close()
-    print(f"\nSending completed! Total {args.count} messages sent to Kafka topic [{TOPIC}]")
+    print(f"Sent {args.count} messages")
 
 if __name__ == "__main__":
     main()

@@ -1,46 +1,27 @@
+import os
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, avg, max, min, count, when
+from pyspark.sql.functions import col
 
 class LakeUtils:
-    def __init__(self, curated_path="file:///tmp/datalake/curated"):
-        self.spark = SparkSession.builder \
-            .appName("SensorLakeUtils") \
-            .config("spark.sql.adaptive.enabled", "true") \
-            .getOrCreate()
-        self.spark.sparkContext.setLogLevel("WARN")
-        self.curated_path = curated_path
+    def __init__(self, base_path="C:/tmp/datalake"):
+        self.base = base_path
+        self.raw = f"{base_path}/raw"
+        self.curated = f"{base_path}/curated"
+        self.consumption = f"{base_path}/consumption"
 
-    def get_sensor_list(self):
-        df = self.spark.read.parquet(self.curated_path)
-        return df.select("sensor_type").distinct().rdd.map(lambda x: x[0]).collect()
+    def ensure_dirs(self):
+        os.makedirs(self.raw, exist_ok=True)
+        os.makedirs(self.curated, exist_ok=True)
+        os.makedirs(self.consumption, exist_ok=True)
+        print(" Data lake directories ready")
 
-    def get_latest_reading(self, sensor_type):
-        df = self.spark.read.parquet(self.curated_path)
-        latest = df.filter(col("sensor_type") == sensor_type) \
-            .orderBy(col("timestamp").desc()) \
-            .limit(1) \
-            .toPandas()
-        return latest.iloc[0].to_dict() if not latest.empty else None
+    def read_curated(self, spark):
+        path = f"{self.curated}/domain=iot"
+        return spark.read.parquet(path)
 
-    def get_sensor_stats(self, sensor_type):
-        df = self.spark.read.parquet(self.curated_path)
-        stats = df.filter(col("sensor_type") == sensor_type) \
-            .agg(
-                count("*").alias("total_records"),
-                avg("value").alias("avg_value"),
-                max("value").alias("max_value"),
-                min("value").alias("min_value"),
-                count(when(col("is_anomaly") == True, 1)).alias("anomaly_count")
-            ) \
-            .toPandas()
-        return stats.iloc[0].to_dict() if not stats.empty else None
+    def read_consumption(self, spark):
+        path = f"{self.consumption}/use_case=sensor_averages"
+        return spark.read.parquet(path)
 
-    def get_anomalies(self, sensor_type=None, limit=10):
-        df = self.spark.read.parquet(self.curated_path).filter(col("is_anomaly") == True)
-        if sensor_type:
-            df = df.filter(col("sensor_type") == sensor_type)
-        anomalies = df.select("sensor_type", "value", "unit", "timestamp", "source") \
-            .orderBy(col("timestamp").desc()) \
-            .limit(limit) \
-            .toPandas()
-        return anomalies.to_dict("records")
+    def get_anomalies(self, df):
+        return df.filter(col("is_anomaly") == True)
