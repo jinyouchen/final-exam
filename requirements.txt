@@ -1,0 +1,6 @@
+flask==3.0.3
+kafka-python-ng==2.2.3
+pyspark==3.5.3
+pandas==2.2.2
+py4j==0.10.9.7
+python-dotenv==1.0.1
